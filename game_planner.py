@@ -1,5 +1,10 @@
 import json
+import time
+from collections import Counter
 
+import markdown
+import pandas as pd
+import requests
 import streamlit as st
 from pytrends.request import TrendReq
 
@@ -57,9 +62,13 @@ REGIONS = {
 
 ENGINES = ["Unity", "Unreal Engine", "Godot", "RPG Maker", "기타"]
 
+STEAMSPY_BASE_URL = "https://steamspy.com/api.php"
+STEAMSPY_TOP_DETAIL_COUNT = 15
+
 SESSION_KEYS = [
     "step", "trend_data", "trend_keywords",
     "game_ideas", "selected_idea", "design_doc",
+    "steam_data",
 ]
 
 SEED_KEYWORDS = {
@@ -137,6 +146,102 @@ def extract_trend_keywords(trend_data) -> list[str]:
 
 
 # ──────────────────────────────────────────────
+# Steam 인기 게임 데이터 수집
+# ──────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def fetch_steam_top100():
+    """SteamSpy Top100(최근 2주) 데이터를 수집하고 상위 게임의 장르/태그를 집계합니다."""
+    try:
+        resp = requests.get(
+            STEAMSPY_BASE_URL,
+            params={"request": "top100in2weeks"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        top100 = resp.json()
+
+        # 플레이어 수 기준 정렬 → 상위 N개
+        sorted_games = sorted(
+            top100.items(),
+            key=lambda x: x[1].get("ccu", 0),
+            reverse=True,
+        )[:STEAMSPY_TOP_DETAIL_COUNT]
+
+        games = []
+        genre_counter = Counter()
+        tag_counter = Counter()
+
+        for appid, basic_info in sorted_games:
+            time.sleep(1)  # rate limit: 1 req/sec
+            try:
+                detail_resp = requests.get(
+                    STEAMSPY_BASE_URL,
+                    params={"request": "appdetails", "appid": appid},
+                    timeout=10,
+                )
+                detail_resp.raise_for_status()
+                detail = detail_resp.json()
+
+                genre_list = [
+                    g.strip()
+                    for g in detail.get("genre", "").split(",")
+                    if g.strip()
+                ]
+                tags = detail.get("tags", {})
+                tag_names = list(tags.keys())[:10] if isinstance(tags, dict) else []
+
+                for g in genre_list:
+                    genre_counter[g] += 1
+                for t in tag_names:
+                    tag_counter[t] += 1
+
+                games.append({
+                    "name": detail.get("name", basic_info.get("name", "Unknown")),
+                    "ccu": basic_info.get("ccu", 0),
+                    "genre": genre_list,
+                    "tags": tag_names,
+                })
+            except Exception:
+                games.append({
+                    "name": basic_info.get("name", "Unknown"),
+                    "ccu": basic_info.get("ccu", 0),
+                    "genre": [],
+                    "tags": [],
+                })
+
+        return {
+            "games": games,
+            "top_genres": genre_counter.most_common(10),
+            "top_tags": tag_counter.most_common(15),
+        }
+    except Exception as e:
+        return f"Steam 데이터 수집 실패: {e}"
+
+
+def format_steam_summary(steam_data) -> str:
+    """Steam 데이터를 AI 프롬프트용 텍스트로 포맷합니다."""
+    if isinstance(steam_data, str) or steam_data is None:
+        return ""
+
+    lines = []
+    lines.append("현재 Steam 인기 게임 (최근 2주 플레이어 수 기준):")
+    for g in steam_data["games"][:10]:
+        genres = ", ".join(g["genre"]) if g["genre"] else "N/A"
+        lines.append(f"- {g['name']} (장르: {genres}, 동접: {g['ccu']:,})")
+
+    lines.append("\nSteam 인기 장르 TOP 10:")
+    for genre, count in steam_data["top_genres"]:
+        lines.append(f"- {genre} ({count}개 게임)")
+
+    lines.append("\nSteam 인기 태그 TOP 15:")
+    tag_strs = [f"{tag}({cnt})" for tag, cnt in steam_data["top_tags"]]
+    lines.append(", ".join(tag_strs))
+
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
 # AI API 함수 (OpenAI / Gemini 공용)
 # ──────────────────────────────────────────────
 
@@ -151,11 +256,12 @@ IDEA_USER_TEMPLATE = """아래 트렌드 키워드와 조건을 참고하여 혁
 [트렌드 키워드]
 {keywords}
 
-[조건]
+{steam_section}[조건]
 - 게임 엔진: {engine}
 - 타겟 지역: {region}
-- 현재 트렌드를 반영할 것
+{genre_filter}- 현재 트렌드를 반영할 것
 - 차별화 요소가 명확할 것
+- Steam 인기 게임 데이터가 있다면, 현재 시장에서 인기 있는 장르/태그를 참고하되 차별화할 것
 
 아래 JSON 형식으로 응답:
 [
@@ -184,7 +290,7 @@ DOC_USER_TEMPLATE = """아래 게임 아이디어를 바탕으로 상세한 게�
 - 차별화 포인트: {differentiation}
 - 게임 엔진: {engine}
 
-아래 항목을 포함하여 마크다운 형식으로 작성해주세요:
+{steam_section}아래 항목을 포함하여 마크다운 형식으로 작성해주세요:
 
 # {title} - 게임 기획 문서
 
@@ -203,7 +309,10 @@ DOC_USER_TEMPLATE = """아래 게임 아이디어를 바탕으로 상세한 게�
 ## 5. 수익 모델
 (BM 전략, 과금 요소, 예상 ARPU 범위)
 
-## 6. 개발 난이도
+## 6. 경쟁작 분석 및 포지셔닝
+(Steam 인기 게임 데이터가 있다면 이를 참고하여: 유사 장르 경쟁작 3-5개 분석, 각 경쟁작의 강점/약점, 본 게임의 시장 내 포지셔닝 전략, 차별화 방향)
+
+## 7. 개발 난이도
 (기술적 도전 과제, 예상 개발 기간, 필요 인력 규모)"""
 
 
@@ -225,12 +334,27 @@ def _call_ai(system_prompt: str, user_content: str) -> str:
         return response.text
 
 
-def generate_game_ideas(keywords: list[str], engine: str, region: str) -> list[dict]:
+def generate_game_ideas(
+    keywords: list[str],
+    engine: str,
+    region: str,
+    steam_summary: str = "",
+    genres: list[str] | None = None,
+) -> list[dict]:
     """트렌드 키워드 기반으로 게임 아이디어 5개를 생성합니다."""
+    steam_section = (
+        f"[Steam 인기 게임 분석]\n{steam_summary}\n\n" if steam_summary else ""
+    )
+    genre_filter = (
+        f"- 선호 장르: {', '.join(genres)} (이 장르를 중심으로 아이디어 생성)\n"
+        if genres else ""
+    )
     user_content = IDEA_USER_TEMPLATE.format(
         keywords=", ".join(keywords),
         engine=engine,
         region=region,
+        steam_section=steam_section,
+        genre_filter=genre_filter,
     )
     text = _call_ai(IDEA_SYSTEM_PROMPT, user_content).strip()
 
@@ -243,8 +367,40 @@ def generate_game_ideas(keywords: list[str], engine: str, region: str) -> list[d
     return json.loads(text)
 
 
-def generate_design_document(idea: dict, engine: str) -> str:
+def convert_md_to_html(md_text: str, title: str = "게임 기획 문서") -> str:
+    """마크다운 텍스트를 스타일이 적용된 HTML 문서로 변환합니다."""
+    body = markdown.markdown(md_text, extensions=["tables", "fenced_code"])
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>{title}</title>
+<style>
+  body {{ font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+         max-width: 900px; margin: 40px auto; padding: 0 20px;
+         line-height: 1.8; color: #333; }}
+  h1 {{ border-bottom: 3px solid #2c3e50; padding-bottom: 10px; color: #2c3e50; }}
+  h2 {{ border-bottom: 1px solid #bdc3c7; padding-bottom: 6px; margin-top: 2em; color: #34495e; }}
+  h3 {{ color: #7f8c8d; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
+  th, td {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
+  th {{ background: #f5f5f5; }}
+  code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }}
+  @media print {{ body {{ margin: 0; }} }}
+</style>
+</head>
+<body>{body}</body>
+</html>"""
+
+
+def generate_design_document(
+    idea: dict, engine: str, steam_summary: str = "",
+) -> str:
     """선택된 아이디어로 상세 기획 문서를 생성합니다."""
+    steam_section = (
+        f"[Steam 시장 데이터 - 경쟁작 분석 참고용]\n{steam_summary}\n\n"
+        if steam_summary else ""
+    )
     user_content = DOC_USER_TEMPLATE.format(
         title=idea["title"],
         genre=idea["genre"],
@@ -252,6 +408,7 @@ def generate_design_document(idea: dict, engine: str) -> str:
         target_users=idea["target_users"],
         differentiation=idea["differentiation"],
         engine=engine,
+        steam_section=steam_section,
     )
     return _call_ai(DOC_SYSTEM_PROMPT, user_content)
 
@@ -269,7 +426,7 @@ st.set_page_config(
 )
 st.title("🎮 트렌드 기반 게임 기획서 생성기")
 st.caption(
-    f"Google Trends 데이터와 {PROVIDER_LABEL}를 활용하여 "
+    f"Google Trends + Steam 인기 게임 데이터와 {PROVIDER_LABEL}를 활용하여 "
     "게임 아이디어를 생성하고 기획 문서를 자동 생성합니다."
 )
 
@@ -286,6 +443,18 @@ with st.sidebar:
     st.caption(f"AI: **{PROVIDER_LABEL}** ({MODEL})")
     selected_region = st.selectbox("지역 선택", list(REGIONS.keys()))
     selected_engine = st.selectbox("게임 엔진 선택", ENGINES)
+
+    GENRE_OPTIONS = [
+        "Action", "Adventure", "RPG", "Strategy", "Simulation",
+        "Casual", "Indie", "Racing", "Sports", "Puzzle",
+        "Platformer", "Shooter", "Horror", "Roguelike",
+    ]
+    selected_genres = st.multiselect(
+        "선호 장르 필터 (선택사항)",
+        options=GENRE_OPTIONS,
+        default=[],
+        help="선택하면 해당 장르 중심으로 아이디어를 생성합니다.",
+    )
 
     st.divider()
     if st.button("🔄 초기화", use_container_width=True):
@@ -318,9 +487,23 @@ if st.session_state["step"] == 1:
 
             st.session_state["trend_keywords"] = keywords
 
+        with st.spinner("Steam 인기 게임 데이터를 수집하고 있습니다..."):
+            steam_data = fetch_steam_top100()
+            if isinstance(steam_data, str):
+                st.warning(f"⚠️ {steam_data}")
+                st.info("Steam 데이터 없이 진행합니다.")
+                st.session_state["steam_data"] = None
+                steam_summary = ""
+            else:
+                st.session_state["steam_data"] = steam_data
+                steam_summary = format_steam_summary(steam_data)
+
         with st.spinner("AI가 게임 아이디어를 생성하고 있습니다..."):
             try:
-                ideas = generate_game_ideas(keywords, selected_engine, selected_region)
+                ideas = generate_game_ideas(
+                    keywords, selected_engine, selected_region, steam_summary,
+                    genres=selected_genres or None,
+                )
                 st.session_state["game_ideas"] = ideas
                 st.session_state["step"] = 2
                 st.rerun()
@@ -339,6 +522,64 @@ if st.session_state["step"] >= 2:
     if st.session_state["trend_keywords"]:
         with st.expander("🔑 사용된 키워드", expanded=False):
             st.write(", ".join(st.session_state["trend_keywords"]))
+
+    if st.session_state.get("steam_data") is not None and not isinstance(
+        st.session_state["steam_data"], str
+    ):
+        steam = st.session_state["steam_data"]
+        with st.expander("🎮 Steam 인기 게임 분석", expanded=False):
+            st.subheader("인기 게임 TOP 15")
+            game_df = pd.DataFrame([
+                {"게임": g["name"], "동접": g["ccu"], "장르": ", ".join(g["genre"])}
+                for g in steam["games"]
+            ])
+            st.dataframe(game_df, use_container_width=True, hide_index=True)
+
+            st.subheader("인기 장르 분포")
+            genre_df = pd.DataFrame(
+                steam["top_genres"], columns=["장르", "게임 수"],
+            )
+            st.bar_chart(genre_df, x="장르", y="게임 수")
+
+            st.subheader("인기 태그")
+            tag_strs = [f"`{tag}` ({cnt})" for tag, cnt in steam["top_tags"]]
+            st.write(" / ".join(tag_strs))
+
+    # 교차 분석
+    has_steam = (
+        st.session_state.get("steam_data") is not None
+        and not isinstance(st.session_state["steam_data"], str)
+    )
+    has_trends = bool(st.session_state.get("trend_keywords"))
+    if has_steam and has_trends:
+        with st.expander("🔀 트렌드 × Steam 교차 분석", expanded=False):
+            trend_kws = {kw.lower() for kw in st.session_state["trend_keywords"]}
+            steam_tags = {
+                tag.lower()
+                for tag, _ in st.session_state["steam_data"]["top_tags"]
+            }
+
+            overlap = trend_kws & steam_tags
+            trend_only = trend_kws - steam_tags
+            steam_only = steam_tags - trend_kws
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("겹치는 키워드", len(overlap))
+                if overlap:
+                    st.write(", ".join(f"`{k}`" for k in sorted(overlap)))
+                else:
+                    st.caption("없음")
+            with col2:
+                st.metric("트렌드에만 있는 키워드", len(trend_only))
+                st.caption("검색은 많지만 Steam에 부족 → 블루오션 가능성")
+                if trend_only:
+                    st.write(", ".join(f"`{k}`" for k in sorted(list(trend_only)[:10])))
+            with col3:
+                st.metric("Steam에만 있는 태그", len(steam_only))
+                st.caption("이미 시장에 존재 → 레드오션 주의")
+                if steam_only:
+                    st.write(", ".join(f"`{k}`" for k in sorted(list(steam_only)[:10])))
 
 # ── Step 2: 아이디어 선택 ──
 if st.session_state["step"] >= 2 and st.session_state["game_ideas"]:
@@ -366,6 +607,14 @@ if st.session_state["step"] >= 2 and st.session_state["game_ideas"]:
                 elif st.session_state["selected_idea"] == idea:
                     st.success("선택됨")
 
+    if st.session_state["step"] == 2:
+        if st.button("🔄 아이디어 재생성", use_container_width=True):
+            st.session_state["game_ideas"] = None
+            st.session_state["selected_idea"] = None
+            st.session_state["design_doc"] = None
+            st.session_state["step"] = 1
+            st.rerun()
+
 # ── Step 3: 기획 문서 생성 ──
 if st.session_state["step"] >= 3 and st.session_state["selected_idea"]:
     st.header("Step 3: 기획 문서 생성")
@@ -373,10 +622,39 @@ if st.session_state["step"] >= 3 and st.session_state["selected_idea"]:
     idea = st.session_state["selected_idea"]
     st.info(f"선택된 아이디어: **{idea['title']}** ({idea['genre']})")
 
+    # 경쟁작 자동 매칭
+    _steam = st.session_state.get("steam_data")
+    if _steam and not isinstance(_steam, str):
+        idea_genre_lower = idea["genre"].lower()
+        matched = [
+            g for g in _steam["games"]
+            if any(ig.lower() in idea_genre_lower for ig in g["genre"])
+        ]
+        if matched:
+            with st.expander(f"🏆 유사 장르 Steam 경쟁작 ({len(matched)}개)", expanded=False):
+                comp_df = pd.DataFrame([
+                    {
+                        "게임": g["name"],
+                        "동접": g["ccu"],
+                        "장르": ", ".join(g["genre"]),
+                        "태그": ", ".join(g["tags"][:5]),
+                    }
+                    for g in matched
+                ])
+                st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
     if st.session_state["design_doc"] is None:
         with st.spinner("AI가 기획 문서를 작성하고 있습니다..."):
             try:
-                doc = generate_design_document(idea, selected_engine)
+                steam_data = st.session_state.get("steam_data")
+                doc_steam_summary = (
+                    format_steam_summary(steam_data)
+                    if steam_data and not isinstance(steam_data, str)
+                    else ""
+                )
+                doc = generate_design_document(
+                    idea, selected_engine, doc_steam_summary,
+                )
                 st.session_state["design_doc"] = doc
                 st.rerun()
             except Exception as e:
@@ -386,10 +664,24 @@ if st.session_state["step"] >= 3 and st.session_state["selected_idea"]:
         st.markdown(st.session_state["design_doc"])
 
         st.divider()
-        st.download_button(
-            label="📥 기획 문서 다운로드 (.md)",
-            data=st.session_state["design_doc"],
-            file_name=f"{idea['title']}_기획문서.md",
-            mime="text/markdown",
-            use_container_width=True,
-        )
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button(
+                label="📥 마크다운 다운로드 (.md)",
+                data=st.session_state["design_doc"],
+                file_name=f"{idea['title']}_기획문서.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        with dl_col2:
+            html_doc = convert_md_to_html(
+                st.session_state["design_doc"], idea["title"],
+            )
+            st.download_button(
+                label="📄 HTML 다운로드 (.html)",
+                data=html_doc,
+                file_name=f"{idea['title']}_기획문서.html",
+                mime="text/html",
+                use_container_width=True,
+                help="브라우저에서 열고 Ctrl+P로 PDF 인쇄할 수 있습니다.",
+            )

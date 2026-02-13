@@ -162,11 +162,12 @@ def generate_fan_image(team_name, league):
     sport = league_map.get(league, "Sports")
     
     prompt = f"""
-    A cinematic, high-quality sports photography of a passionate South Korean fan cheering in a stadium.
-    The fan is wearing a professional {sport} uniform with the primary colors of the '{team_name}' team.
-    The scene is a crowded stadium at night with dramatic lighting and stadium flares.
-    The fan looks extremely happy and excited, celebrating a victory.
-    Photorealistic, 8k resolution, dynamic composition, shallow depth of field.
+    A professional studio portrait of a South Korean fan wearing the official {sport} jersey of the '{team_name}' team.
+    The jersey should clearly feature the team's primary colors and a representative logo on the chest inspired by '{team_name}'.
+    The lighting is clean and bright, like an official team merchandise photoshoot.
+    The focus is on the detailed texture of the jersey and the team's identity. 
+    The background is a simple, elegant gradient that complements the team's colors.
+    High-end sports apparel photography, 8k resolution, realistic, authentic kit design.
     """
     
     try:

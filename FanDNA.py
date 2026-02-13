@@ -156,34 +156,53 @@ def generate_survey_questions():
         st.error(f"질문 생성 중 오류가 발생했습니다: {e}")
         return []
 
-def generate_fan_image(team_name, league):
-    """DALL-E 3를 통해 추천 팀 유니폼을 입은 팬 이미지 생성"""
-    league_map = {"KBO": "Baseball", "K League": "Soccer", "KBL": "Basketball"}
-    sport = league_map.get(league, "Sports")
+# ──────────────────────────────────────────────
+# 2. 비즈니스 로직 (AI 기반 질문 및 추천 생성)
+# ──────────────────────────────────────────────
+
+def generate_survey_questions():
+    """OpenAI를 통해 매번 새로운 심리 테스트 질문 10개를 생성"""
+    system_prompt = """
+    당신은 대한민국 스포츠 팬들의 심리를 꿰뚫어 보는 재치 있는 분석가입니다. 
+    사용자의 팬 성향을 분석하기 위한 '심리 테스트 질문' 10개를 생성하세요.
     
-    prompt = f"""
-    A professional studio portrait of a South Korean fan wearing the official {sport} jersey of the '{team_name}' team.
-    The jersey should clearly feature the team's primary colors and a representative logo on the chest inspired by '{team_name}'.
-    The lighting is clean and bright, like an official team merchandise photoshoot.
-    The focus is on the detailed texture of the jersey and the team's identity. 
-    The background is a simple, elegant gradient that complements the team's colors.
-    High-end sports apparel photography, 8k resolution, realistic, authentic kit design.
+    [질문 생성 가이드라인]
+    1. 총 10개의 질문을 생성하며, 각 질문은 서로 다른 성향 차원을 다룹니다.
+    2. 각 질문의 제목은 '1️⃣ 응원 스타일', '2️⃣ 플레이 스타일' 처럼 숫지 이모지와 카테고리 명칭을 사용하세요.
+    3. 각 질문은 반드시 A, B, C, D 4개의 선택지를 가집니다.
+    4. 선택지는 매우 짧고 명확하며, 팬들의 실제 말투를 반영하세요.
+       (예: A. 전통과 역사 / B. 요즘 대세 / C. 몰아치기 / D. 낭만 서사)
+    5. 한국 프로스포츠(KBO, K리그, KBL) 전반에 적용 가능한 보편적이고 흥미로운 질문으로 구성하세요.
+    
+    반드시 아래 JSON 배열 형식으로만 응답하십시오:
+    [
+      {
+        "id": "q1",
+        "category": "응원 스타일",
+        "question_title": "1️⃣ 응원 스타일",
+        "question": "당신이 팀을 선택할 때 가장 중요하게 생각하는 것은?",
+        "options": [
+          {"label": "A. 전통·역사·팬덤이 탄탄한 팀", "value": "tradition"},
+          {"label": "B. 요즘 잘 나가고 트렌디한 팀", "value": "trendy"},
+          {"label": "C. 한 번씩 미친 듯이 터지는 팀", "value": "explosion"},
+          {"label": "D. 약해도 서사가 있는 팀", "value": "story"}
+        ]
+      },
+      ... (10개 반복)
+    ]
     """
     
     try:
-        response = client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size="1024x1024",
-            quality="standard",
-            n=1,
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "system", "content": system_prompt}],
+            response_format={"type": "json_object"}
         )
-        return response.data[0].url
+        data = json.loads(response.choices[0].message.content)
+        return data if isinstance(data, list) else data.get("questions", data.get("survey", []))
     except Exception as e:
-        print(f"이미지 생성 실패: {e}")
-        return None
-
-def get_recommendation(user_answers):
+        st.error(f"질문 생성 중 오류가 발생했습니다: {e}")
+        return []
     """OpenAI API를 통해 팀 추천 결과 생성"""
     
     system_prompt = """
@@ -268,27 +287,27 @@ if st.session_state.step == "start":
                     st.error("질문을 생성하는 데 실패했습니다. 잠시 후 다시 시도해주세요.")
 
 elif st.session_state.step == "survey":
-    st.markdown("<h2 style='text-align: center; margin-bottom: 40px;'>📊 성향 분석 설문</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; margin-bottom: 40px;'>📊 FanDNA 성향 분석</h2>", unsafe_allow_html=True)
     
     with st.container():
         with st.form("survey_form"):
             temp_answers = {}
             for i, q in enumerate(st.session_state.selected_questions):
-                st.markdown(f"**Question {i+1}**")
-                st.write(f"### {q['question']}")
+                st.markdown(f"### {q.get('question_title', f'질문 {i+1}')}")
+                st.write(f"{q['question']}")
                 choice = st.radio(
-                    label=q['dimension'],
+                    label=q.get('category', f"cat_{i}"),
                     options=[opt['label'] for opt in q['options']],
                     index=0,
                     key=q['id'],
                     label_visibility="collapsed"
                 )
                 val = next(opt['value'] for opt in q['options'] if opt['label'] == choice)
-                temp_answers[q['dimension']] = val
+                temp_answers[q.get('category', f"cat_{i}")] = val
                 st.markdown("<br>", unsafe_allow_html=True)
             
             st.divider()
-            submitted = st.form_submit_button("나의 결과 확인하기", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("나의 결과 분석하기", type="primary", use_container_width=True)
             if submitted:
                 st.session_state.answers = temp_answers
                 st.session_state.step = "analyzing"
@@ -296,14 +315,11 @@ elif st.session_state.step == "survey":
 
 elif st.session_state.step == "analyzing":
     st.markdown("<div style='height: 200px;'></div>", unsafe_allow_html=True)
-    st.markdown("<h2 style='text-align: center;'>🧠 당신의 DNA를 해독하고 이미지를 생성 중...</h2>", unsafe_allow_html=True)
-    with st.spinner("사용자의 성향 분석 및 맞춤형 팬 이미지 생성 중..."):
+    st.markdown("<h2 style='text-align: center;'>🧠 당신의 DNA를 해독 중...</h2>", unsafe_allow_html=True)
+    with st.spinner("10개의 답변을 바탕으로 당신의 팀을 정밀 분석하고 있습니다."):
         result = get_recommendation(st.session_state.answers)
         if result:
             st.session_state.result = result
-            # 가장 높은 매칭률을 가진 첫 번째 팀으로 이미지 생성
-            top_team = result['recommendations'][0]
-            st.session_state.fan_image_url = generate_fan_image(top_team['team'], top_team['league'])
             st.session_state.step = "result"
             st.rerun()
 
@@ -311,11 +327,15 @@ elif st.session_state.step == "result":
     result = st.session_state.result
     st.balloons()
     
-    # 상단 이미지 표시
-    if st.session_state.get("fan_image_url"):
-        st.image(st.session_state.fan_image_url, use_container_width=True, caption=f"당신의 미래 모습: {result['recommendations'][0]['team']}의 열혈 팬")
-    
     st.markdown(f"""
+        <div style='text-align: center; margin-bottom: 50px;'>
+            <p style='font-size: 1.5em; color: #666; margin-bottom: 0;'>분석 완료! 당신은</p>
+            <h1 style='font-size: 3.5em; margin-top: 0;'>'{result['personality_type']}'</h1>
+            <div style='background: #eef2f7; padding: 20px; border-radius: 15px; margin-top: 20px;'>
+                {result['summary']}
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
         <div style='text-align: center; margin-bottom: 50px;'>
             <p style='font-size: 1.5em; color: #666; margin-bottom: 0;'>분석 완료! 당신은</p>
             <h1 style='font-size: 3.5em; margin-top: 0;'>'{result['personality_type']}'</h1>

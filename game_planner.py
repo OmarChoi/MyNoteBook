@@ -690,40 +690,300 @@ st.set_page_config(
     page_icon="🎮",
     layout="wide",
 )
+
+# ── 커스텀 CSS ──
+st.markdown("""
+<style>
+/* ─── 다크 게이밍 테마 ─── */
+:root {
+    --accent-purple: #7c3aed;
+    --accent-cyan: #06b6d4;
+    --accent-gradient: linear-gradient(135deg, #7c3aed, #06b6d4);
+    --card-bg: rgba(30, 30, 60, 0.05);
+    --card-border: rgba(124, 58, 237, 0.2);
+}
+
+/* ─── 사이드바 스타일링 ─── */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+}
+section[data-testid="stSidebar"] * {
+    color: #e0e0ff !important;
+}
+section[data-testid="stSidebar"] .stSelectbox label,
+section[data-testid="stSidebar"] .stMultiSelect label,
+section[data-testid="stSidebar"] .stSlider label {
+    color: #a78bfa !important;
+    font-weight: 600;
+}
+section[data-testid="stSidebar"] hr {
+    border-color: rgba(124, 58, 237, 0.3);
+}
+section[data-testid="stSidebar"] .stButton > button {
+    background: linear-gradient(135deg, #7c3aed, #06b6d4) !important;
+    color: white !important;
+    border: none !important;
+    font-weight: 600;
+}
+
+/* ─── Step 진행 표시기 ─── */
+.step-indicator {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0;
+    margin: 1rem 0 2rem 0;
+    padding: 1rem;
+    background: linear-gradient(135deg, rgba(124,58,237,0.05), rgba(6,182,212,0.05));
+    border-radius: 12px;
+    border: 1px solid rgba(124,58,237,0.1);
+}
+.step-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 20px;
+    border-radius: 25px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #888;
+    background: transparent;
+    transition: all 0.3s ease;
+}
+.step-item.active {
+    background: linear-gradient(135deg, #7c3aed, #06b6d4);
+    color: white;
+    font-weight: 700;
+    box-shadow: 0 4px 15px rgba(124, 58, 237, 0.3);
+}
+.step-item.completed {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    font-weight: 600;
+}
+.step-arrow {
+    font-size: 1.2rem;
+    color: #ccc;
+    margin: 0 4px;
+}
+
+/* ─── Primary 버튼 그라디언트 ─── */
+.stButton > button[kind="primary"],
+div[data-testid="stFormSubmitButton"] > button {
+    background: linear-gradient(135deg, #7c3aed, #06b6d4) !important;
+    color: white !important;
+    border: none !important;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(124, 58, 237, 0.2);
+}
+.stButton > button[kind="primary"]:hover,
+div[data-testid="stFormSubmitButton"] > button:hover {
+    box-shadow: 0 6px 25px rgba(124, 58, 237, 0.4);
+    transform: translateY(-1px);
+}
+
+/* ─── 아이디어 카드 hover 효과 ─── */
+div[data-testid="stVerticalBlock"] > div[data-testid="stContainer"] {
+    transition: all 0.3s ease;
+    border-color: rgba(124, 58, 237, 0.15) !important;
+}
+div[data-testid="stVerticalBlock"] > div[data-testid="stContainer"]:hover {
+    transform: translateY(-2px);
+    border-color: rgba(124, 58, 237, 0.5) !important;
+    box-shadow: 0 8px 25px rgba(124, 58, 237, 0.15);
+}
+
+/* ─── Expander 스타일 ─── */
+details[data-testid="stExpander"] {
+    border: 1px solid rgba(124, 58, 237, 0.15) !important;
+    border-radius: 10px !important;
+    background: rgba(124, 58, 237, 0.02);
+}
+details[data-testid="stExpander"] summary {
+    font-weight: 600;
+}
+
+/* ─── Metric 카드 스타일 ─── */
+div[data-testid="stMetric"] {
+    background: linear-gradient(135deg, rgba(124,58,237,0.08), rgba(6,182,212,0.08));
+    padding: 16px;
+    border-radius: 12px;
+    border: 1px solid rgba(124, 58, 237, 0.15);
+}
+div[data-testid="stMetric"] label {
+    color: #7c3aed !important;
+    font-weight: 600;
+}
+
+/* ─── 장르 뱃지 ─── */
+.genre-badge {
+    display: inline-block;
+    padding: 3px 12px;
+    border-radius: 15px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    background: linear-gradient(135deg, #7c3aed, #6d28d9);
+    color: white;
+    margin-right: 6px;
+    margin-bottom: 4px;
+}
+
+/* ─── 아이디어 카드 내 아이콘 라벨 ─── */
+.idea-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 6px;
+    margin-bottom: 4px;
+}
+.idea-label.mechanic {
+    background: rgba(124, 58, 237, 0.1);
+    color: #7c3aed;
+}
+.idea-label.market {
+    background: rgba(6, 182, 212, 0.1);
+    color: #0891b2;
+}
+.idea-label.fantasy {
+    background: rgba(236, 72, 153, 0.1);
+    color: #db2777;
+}
+
+/* ─── 기획 문서 카드 프레임 ─── */
+.doc-frame {
+    background: white;
+    border: 2px solid rgba(124, 58, 237, 0.15);
+    border-radius: 16px;
+    padding: 2rem;
+    margin: 1rem 0;
+    box-shadow: 0 4px 20px rgba(124, 58, 237, 0.08);
+}
+.doc-frame h1 {
+    color: #7c3aed;
+    border-bottom: 3px solid;
+    border-image: linear-gradient(135deg, #7c3aed, #06b6d4) 1;
+    padding-bottom: 10px;
+}
+.doc-frame h2 {
+    color: #4c1d95;
+    border-bottom: 1px solid rgba(124, 58, 237, 0.2);
+    padding-bottom: 6px;
+}
+
+/* ─── 사이드바 로고 영역 ─── */
+.sidebar-logo {
+    text-align: center;
+    padding: 1rem 0 1.5rem 0;
+    border-bottom: 1px solid rgba(124, 58, 237, 0.3);
+    margin-bottom: 1rem;
+}
+.sidebar-logo .logo-icon {
+    font-size: 2.5rem;
+    display: block;
+    margin-bottom: 4px;
+}
+.sidebar-logo .logo-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #a78bfa, #06b6d4);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.sidebar-logo .logo-subtitle {
+    font-size: 0.75rem;
+    color: #8888bb !important;
+    margin-top: 2px;
+}
+
+/* ─── 사이드바 섹션 제목 ─── */
+.sidebar-section-title {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #a78bfa !important;
+    margin: 1rem 0 0.5rem 0;
+    font-weight: 700;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🎮 트렌드 기반 게임 기획서 생성기")
 st.caption(
     f"Google Trends + Steam 인기 게임 데이터와 {PROVIDER_LABEL}를 활용하여 "
     "게임 아이디어를 생성하고 기획 문서를 자동 생성합니다."
 )
 
-# 세션 상태 초기화
+# 세션 상태 초기화 (step indicator보다 먼저 필요)
 for key in SESSION_KEYS:
     if key not in st.session_state:
         st.session_state[key] = None
 if st.session_state["step"] is None:
     st.session_state["step"] = 1
 
+
+def render_step_indicator(current_step: int):
+    """3단계 프로그레스 바 UI를 렌더링합니다."""
+    steps = [
+        ("1", "트렌드 분석", "📊"),
+        ("2", "아이디어 선택", "💡"),
+        ("3", "기획서 생성", "📝"),
+    ]
+    items = []
+    for num, label, icon in steps:
+        step_num = int(num)
+        if step_num < current_step:
+            cls = "completed"
+            marker = "✅"
+        elif step_num == current_step:
+            cls = "active"
+            marker = icon
+        else:
+            cls = ""
+            marker = icon
+        items.append(f'<div class="step-item {cls}">{marker} {num}. {label}</div>')
+
+    html = '<div class="step-indicator">' + '<span class="step-arrow">→</span>'.join(items) + '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+render_step_indicator(st.session_state["step"])
+
 # ── 사이드바 ──
 with st.sidebar:
-    st.header("설정")
-    st.caption(f"AI: **{PROVIDER_LABEL}** ({MODEL})")
-    selected_region = st.selectbox("지역 선택", list(REGIONS.keys()))
-    selected_engine = st.selectbox("게임 엔진 선택", ENGINES)
+    st.markdown("""
+    <div class="sidebar-logo">
+        <span class="logo-icon">🎮</span>
+        <div class="logo-title">Game Planner AI</div>
+        <div class="logo-subtitle">트렌드 기반 게임 기획 도구</div>
+    </div>
+    """, unsafe_allow_html=True)
 
+    st.markdown('<div class="sidebar-section-title">⚙️ 기본 설정</div>', unsafe_allow_html=True)
+    st.caption(f"AI: **{PROVIDER_LABEL}** ({MODEL})")
+    selected_region = st.selectbox("🌍 지역 선택", list(REGIONS.keys()))
+    selected_engine = st.selectbox("🛠️ 게임 엔진 선택", ENGINES)
+
+    st.markdown('<div class="sidebar-section-title">🎯 필터 옵션</div>', unsafe_allow_html=True)
     GENRE_OPTIONS = [
         "Action", "Adventure", "RPG", "Strategy", "Simulation",
         "Casual", "Indie", "Racing", "Sports", "Puzzle",
         "Platformer", "Shooter", "Horror", "Roguelike",
     ]
     selected_genres = st.multiselect(
-        "선호 장르 필터 (선택사항)",
+        "🏷️ 선호 장르 필터 (선택사항)",
         options=GENRE_OPTIONS,
         default=[],
         help="선택하면 해당 장르 중심으로 아이디어를 생성합니다.",
     )
 
     recent_years = st.slider(
-        "출시 연도 필터 (최근 N년 이내)",
+        "📅 출시 연도 필터 (최근 N년 이내)",
         min_value=1,
         max_value=20,
         value=5,
@@ -926,16 +1186,33 @@ if st.session_state["step"] >= 2 and st.session_state["game_ideas"]:
 
             with col1:
                 st.subheader(f"{i + 1}. {idea['title']}")
-                st.write(f"**장르:** {idea['genre']}")
+                # 장르 뱃지
+                genres_html = " ".join(
+                    f'<span class="genre-badge">{g.strip()}</span>'
+                    for g in idea["genre"].split(",")
+                )
+                st.markdown(genres_html, unsafe_allow_html=True)
                 st.write(f"**핵심 시스템:** {idea['core_system']}")
                 st.write(f"**타겟 유저:** {idea['target_users']}")
                 st.write(f"**차별화:** {idea['differentiation']}")
                 if idea.get("core_mechanic"):
-                    st.write(f"**핵심 메커니즘:** {idea['core_mechanic']}")
+                    st.markdown(
+                        f'<div class="idea-label mechanic">⚙️ 핵심 메커니즘</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.write(idea["core_mechanic"])
                 if idea.get("market_gap"):
-                    st.write(f"**시장 공백:** {idea['market_gap']}")
+                    st.markdown(
+                        f'<div class="idea-label market">📍 시장 공백</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.write(idea["market_gap"])
                 if idea.get("player_fantasy"):
-                    st.write(f"**플레이어 판타지:** {idea['player_fantasy']}")
+                    st.markdown(
+                        f'<div class="idea-label fantasy">✨ 플레이어 판타지</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.write(idea["player_fantasy"])
 
             with col2:
                 if st.session_state["step"] == 2:
@@ -980,7 +1257,14 @@ if st.session_state["step"] >= 3 and st.session_state["selected_idea"]:
                 st.error(f"기획 문서 생성 실패: {e}")
 
     if st.session_state["design_doc"]:
-        st.markdown(st.session_state["design_doc"])
+        doc_html = markdown.markdown(
+            st.session_state["design_doc"],
+            extensions=["tables", "fenced_code"],
+        )
+        st.markdown(
+            f'<div class="doc-frame">{doc_html}</div>',
+            unsafe_allow_html=True,
+        )
 
         st.divider()
         dl_col1, dl_col2 = st.columns(2)

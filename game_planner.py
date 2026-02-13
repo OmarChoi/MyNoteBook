@@ -70,6 +70,7 @@ STEAMSPY_TOP_DETAIL_COUNT = 15
 SESSION_KEYS = [
     "step", "trend_data", "trend_keywords",
     "game_ideas", "selected_idea", "design_doc",
+    "market_analysis",
 ]
 
 # steam_data는 별도 캐싱 (초기화 시에도 유지)
@@ -350,27 +351,132 @@ def format_steam_summary(steam_data, recent_years: int) -> str:
     return "\n".join(lines)
 
 
+def format_market_patterns(steam_data, recent_years: int) -> str:
+    """Steam 데이터에서 게임 이름을 제거하고 시장 패턴만 추출합니다. (AI 프롬프트용)"""
+    if isinstance(steam_data, str) or steam_data is None:
+        return ""
+
+    lines = []
+
+    # 장르 조합 빈도
+    genre_combos = Counter()
+    playtime_by_genre = {}
+    owner_by_genre = {}
+    for g in steam_data["games"]:
+        combo = tuple(sorted(g["genre"])) if g["genre"] else ("Unknown",)
+        genre_combos[combo] += 1
+        avg_play = g.get("average_2weeks", 0)
+        owners = g.get("owners", 0)
+        for genre in combo:
+            playtime_by_genre.setdefault(genre, []).append(avg_play)
+            owner_by_genre.setdefault(genre, []).append(owners)
+
+    lines.append(f"[시장 패턴 분석 - 최근 {recent_years}년 이내 출시, Steam Top100 기준]")
+    lines.append("")
+
+    lines.append("장르 조합 빈도:")
+    for combo, count in genre_combos.most_common(10):
+        lines.append(f"- {' + '.join(combo)}: {count}개")
+
+    lines.append("")
+    lines.append("장르별 평균 플레이타임 (최근 2주):")
+    for genre, times in sorted(playtime_by_genre.items(), key=lambda x: sum(x[1]) / len(x[1]), reverse=True):
+        avg = sum(times) // len(times)
+        lines.append(f"- {genre}: {_format_playtime(avg)} (게임 {len(times)}개)")
+
+    lines.append("")
+    lines.append("장르별 평균 소유자 수:")
+    for genre, owners in sorted(owner_by_genre.items(), key=lambda x: sum(x[1]) / len(x[1]), reverse=True):
+        avg = sum(owners) // len(owners)
+        lines.append(f"- {genre}: {_format_owners(avg)} (게임 {len(owners)}개)")
+
+    # 태그 클러스터
+    lines.append("")
+    lines.append("인기 태그 분포:")
+    for tag, cnt in steam_data["top_tags"]:
+        lines.append(f"- {tag}: {cnt}개 게임")
+
+    # 시장 포화도
+    lines.append("")
+    lines.append("시장 포화도 (장르별 게임 수):")
+    for genre, count in steam_data["top_genres"]:
+        saturation = "높음" if count >= 5 else "보통" if count >= 3 else "낮음"
+        lines.append(f"- {genre}: {count}개 (포화도: {saturation})")
+
+    # 플레이타임 분포
+    all_playtimes = [g.get("average_2weeks", 0) for g in steam_data["games"] if g.get("average_2weeks", 0) > 0]
+    if all_playtimes:
+        lines.append("")
+        lines.append("전체 플레이타임 분포:")
+        lines.append(f"- 최소: {_format_playtime(min(all_playtimes))}")
+        lines.append(f"- 최대: {_format_playtime(max(all_playtimes))}")
+        lines.append(f"- 평균: {_format_playtime(sum(all_playtimes) // len(all_playtimes))}")
+
+    return "\n".join(lines)
+
+
 # ──────────────────────────────────────────────
 # AI API 함수 (OpenAI / Gemini 공용)
 # ──────────────────────────────────────────────
 
-IDEA_SYSTEM_PROMPT = (
-    "당신은 게임 기획 전문가입니다. "
-    "반드시 JSON 배열로만 응답하세요. "
+MARKET_ANALYSIS_SYSTEM_PROMPT = (
+    "당신은 게임 시장 분석 전문가입니다. "
+    "데이터 기반으로 시장의 공백과 혁신 기회를 발견하는 것이 전문입니다. "
+    "반드시 JSON 객체로만 응답하세요. "
     "마크다운 코드 펜스 없이 순수 JSON만 출력하세요."
 )
 
-IDEA_USER_TEMPLATE = """아래 트렌드 키워드와 조건을 참고하여 혁신적인 게임 아이디어 5개를 제안해주세요.
+MARKET_ANALYSIS_USER_TEMPLATE = """아래 시장 데이터와 트렌드를 분석하여 혁신적인 게임 기회를 도출해주세요.
 
 [트렌드 키워드]
 {keywords}
 
-{steam_section}[조건]
+[시장 패턴 데이터]
+{market_patterns}
+
+다음 관점으로 분석해주세요:
+
+1. 사용자 잠재 니즈: 트렌드 키워드에서 드러나지만 현재 시장이 충족시키지 못하는 플레이어 욕구 3-5개
+2. 시장 공백: 인기 있는 장르/태그 조합에서 누락된 영역, 또는 포화도가 낮은 블루오션 3-5개
+3. 혁신 축: 기존 게임들이 시도하지 않은 새로운 방향성 3-5개 (메커니즘, 내러티브, 인터랙션 등)
+4. 안티패턴: 시장에 이미 넘쳐나서 피해야 할 뻔한 조합이나 클리셰 3-5개
+
+아래 JSON 형식으로 응답:
+{{
+    "player_needs": ["니즈1: 설명", "니즈2: 설명", ...],
+    "market_gaps": ["공백1: 설명", "공백2: 설명", ...],
+    "innovation_axes": ["혁신축1: 설명", "혁신축2: 설명", ...],
+    "anti_patterns": ["안티패턴1: 설명", "안티패턴2: 설명", ...]
+}}"""
+
+IDEA_SYSTEM_PROMPT = (
+    "당신은 혁신적인 게임 디자이너입니다. "
+    "'이런 게임은 본 적 없다'는 반응을 이끌어내는 것이 목표입니다. "
+    "반드시 JSON 배열로만 응답하세요. "
+    "마크다운 코드 펜스 없이 순수 JSON만 출력하세요."
+)
+
+IDEA_USER_TEMPLATE = """아래 시장 분석 결과를 기반으로 혁신적인 게임 아이디어 5개를 제안해주세요.
+
+[시장 분석 결과]
+- 사용자 잠재 니즈: {player_needs}
+- 시장 공백: {market_gaps}
+- 혁신 축: {innovation_axes}
+- 피해야 할 안티패턴: {anti_patterns}
+
+[트렌드 키워드]
+{keywords}
+
+{market_patterns_section}[조건]
 - 게임 엔진: {engine}
 - 타겟 지역: {region}
-{genre_filter}- 현재 트렌드를 반영할 것
-- 차별화 요소가 명확할 것
-- Steam 인기 게임 데이터가 있다면, 현재 시장에서 인기 있는 장르/태그를 참고하되 차별화할 것
+{genre_filter}
+[필수 창의성 규칙]
+- 기존 게임의 시스템을 그대로 가져오지 말 것
+- "A게임 + B게임"식 단순 조합을 하지 말 것
+- 핵심 메커니즘이 기존에 없던 새로운 것이어야 함
+- 시장 공백을 메우되, 공백이 존재하는 이유(기술적 한계 등)도 고려할 것
+- 플레이어가 경험할 새로운 감정이나 판타지를 명확히 할 것
 
 아래 JSON 형식으로 응답:
 [
@@ -380,12 +486,15 @@ IDEA_USER_TEMPLATE = """아래 트렌드 키워드와 조건을 참고하여 혁
     "core_system": "핵심 시스템 설명 (2-3문장)",
     "target_users": "타겟 유저층",
     "differentiation": "차별화 포인트",
-    "references": "레퍼런스 게임 2-3개와 각각에서 어떤 요소를 참고했는지 설명"
+    "core_mechanic": "이 게임만의 독창적 핵심 메커니즘 (기존에 없던 새로운 인터랙션/시스템)",
+    "market_gap": "이 게임이 메우는 시장 공백",
+    "player_fantasy": "플레이어가 경험하게 될 새로운 판타지/감정"
   }}
 ]"""
 
 DOC_SYSTEM_PROMPT = (
     "당신은 시니어 게임 기획자입니다. "
+    "독창적인 핵심 메커니즘을 중심으로 모든 시스템이 유기적으로 연결된 "
     "상세하고 전문적인 게임 기획 문서를 마크다운 형식으로 작성합니다."
 )
 
@@ -397,31 +506,45 @@ DOC_USER_TEMPLATE = """아래 게임 아이디어를 바탕으로 상세한 게�
 - 핵심 시스템: {core_system}
 - 타겟 유저: {target_users}
 - 차별화 포인트: {differentiation}
+- 핵심 메커니즘: {core_mechanic}
+- 시장 공백: {market_gap}
+- 플레이어 판타지: {player_fantasy}
 - 게임 엔진: {engine}
 
-{steam_section}아래 항목을 포함하여 마크다운 형식으로 작성해주세요:
+{market_section}[기획 원칙]
+- 모든 하위 시스템은 핵심 메커니즘에서 파생되어야 합니다
+- 기존 게임의 시스템을 그대로 차용하지 마세요
+- 핵심 메커니즘이 만들어내는 독특한 플레이 경험에 집중하세요
+
+아래 항목을 포함하여 마크다운 형식으로 작성해주세요:
 
 # {title} - 게임 기획 문서
 
 ## 1. 게임 개요
-(장르, 플랫폼, 타겟 유저, 게임 콘셉트 설명)
+(장르, 플랫폼, 타겟 유저, 게임 콘셉트 설명, 플레이어 판타지)
 
-## 2. 재미 요소
+## 2. 핵심 메커니즘 상세 설계
+(독창적 핵심 메커니즘의 구체적 작동 방식, 플레이어 인터랙션 흐름, 이 메커니즘이 만드는 독특한 경험, 기존 게임과의 차이점)
+
+## 3. 게임플레이 루프
+(코어 루프: 1분/10분/1시간 단위 플레이 사이클, 각 루프가 핵심 메커니즘과 어떻게 연결되는지, 장기 진행 루프와 리텐션 구조)
+
+## 4. 재미 요소
 (핵심 재미, 플레이어 동기부여, 리텐션 요소)
 
-## 3. 핵심 시스템
-(메인 게임플레이 루프, 주요 시스템 3-5개 상세 설명)
+## 5. 시스템 설계
+(핵심 메커니즘에서 파생된 주요 시스템 3-5개, 각 시스템 간 상호작용)
 
-## 4. 콘텐츠 구성
+## 6. 콘텐츠 구성
 (스테이지/맵/월드 구성, 캐릭터/아이템 시스템, 진행 구조)
 
-## 5. 수익 모델
+## 7. 수익 모델
 (BM 전략, 과금 요소, 예상 ARPU 범위)
 
-## 6. 경쟁작 분석 및 포지셔닝
-(Steam 인기 게임 데이터가 있다면 이를 참고하여: 유사 장르 경쟁작 3-5개 분석, 각 경쟁작의 강점/약점, 본 게임의 시장 내 포지셔닝 전략, 차별화 방향)
+## 8. 시장 포지셔닝
+(타겟 시장 세그먼트, 이 게임이 메우는 시장 공백, 포지셔닝 전략, 차별화 방향 - 특정 게임과 비교하지 말고 시장 내 위치를 설명)
 
-## 7. 개발 난이도
+## 9. 개발 난이도
 (기술적 도전 과제, 예상 개발 기간, 필요 인력 규모)"""
 
 
@@ -443,16 +566,43 @@ def _call_ai(system_prompt: str, user_content: str) -> str:
         return response.text
 
 
+def generate_market_analysis(
+    keywords: list[str],
+    market_patterns: str,
+) -> dict:
+    """시장 데이터를 분석하여 니즈, 공백, 혁신축, 안티패턴을 도출합니다."""
+    user_content = MARKET_ANALYSIS_USER_TEMPLATE.format(
+        keywords=", ".join(keywords),
+        market_patterns=market_patterns if market_patterns else "시장 데이터 없음",
+    )
+    text = _call_ai(MARKET_ANALYSIS_SYSTEM_PROMPT, user_content).strip()
+
+    # 마크다운 코드 펜스 제거
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = [ln for ln in lines if not ln.strip().startswith("```")]
+        text = "\n".join(lines)
+
+    return json.loads(text)
+
+
 def generate_game_ideas(
     keywords: list[str],
     engine: str,
     region: str,
-    steam_summary: str = "",
+    market_patterns: str = "",
+    market_analysis: dict | None = None,
     genres: list[str] | None = None,
 ) -> list[dict]:
-    """트렌드 키워드 기반으로 게임 아이디어 5개를 생성합니다."""
-    steam_section = (
-        f"[Steam 인기 게임 분석]\n{steam_summary}\n\n" if steam_summary else ""
+    """시장 분석 결과 기반으로 혁신적인 게임 아이디어 5개를 생성합니다."""
+    analysis = market_analysis or {}
+    player_needs = "\n".join(f"  - {n}" for n in analysis.get("player_needs", ["데이터 없음"]))
+    market_gaps = "\n".join(f"  - {g}" for g in analysis.get("market_gaps", ["데이터 없음"]))
+    innovation_axes = "\n".join(f"  - {a}" for a in analysis.get("innovation_axes", ["데이터 없음"]))
+    anti_patterns = "\n".join(f"  - {p}" for p in analysis.get("anti_patterns", ["데이터 없음"]))
+
+    market_patterns_section = (
+        f"[시장 패턴 데이터]\n{market_patterns}\n\n" if market_patterns else ""
     )
     genre_filter = (
         f"- 선호 장르: {', '.join(genres)} (이 장르를 중심으로 아이디어 생성)\n"
@@ -462,7 +612,11 @@ def generate_game_ideas(
         keywords=", ".join(keywords),
         engine=engine,
         region=region,
-        steam_section=steam_section,
+        player_needs=player_needs,
+        market_gaps=market_gaps,
+        innovation_axes=innovation_axes,
+        anti_patterns=anti_patterns,
+        market_patterns_section=market_patterns_section,
         genre_filter=genre_filter,
     )
     text = _call_ai(IDEA_SYSTEM_PROMPT, user_content).strip()
@@ -503,12 +657,12 @@ def convert_md_to_html(md_text: str, title: str = "게임 기획 문서") -> str
 
 
 def generate_design_document(
-    idea: dict, engine: str, steam_summary: str = "",
+    idea: dict, engine: str, market_patterns: str = "",
 ) -> str:
-    """선택된 아이디어로 상세 기획 문서를 생성합니다."""
-    steam_section = (
-        f"[Steam 시장 데이터 - 경쟁작 분석 참고용]\n{steam_summary}\n\n"
-        if steam_summary else ""
+    """선택된 아이디어로 핵심 메커니즘 중심의 상세 기획 문서를 생성합니다."""
+    market_section = (
+        f"[시장 패턴 데이터 - 포지셔닝 참고용]\n{market_patterns}\n\n"
+        if market_patterns else ""
     )
     user_content = DOC_USER_TEMPLATE.format(
         title=idea["title"],
@@ -516,8 +670,11 @@ def generate_design_document(
         core_system=idea["core_system"],
         target_users=idea["target_users"],
         differentiation=idea["differentiation"],
+        core_mechanic=idea.get("core_mechanic", ""),
+        market_gap=idea.get("market_gap", ""),
+        player_fantasy=idea.get("player_fantasy", ""),
         engine=engine,
-        steam_section=steam_section,
+        market_section=market_section,
     )
     return _call_ai(DOC_SYSTEM_PROMPT, user_content)
 
@@ -618,7 +775,7 @@ if st.session_state["step"] == 1:
         if cache_valid:
             st.success(f"Steam 데이터 캐시 사용 (최근 {recent_years}년 필터, {len(cached['games'])}개 게임)")
             steam_data = cached
-            steam_summary = format_steam_summary(steam_data, recent_years)
+            market_patterns = format_market_patterns(steam_data, recent_years)
         else:
             st.subheader("Steam 데이터 수집 중...")
             st.caption(f"최근 {recent_years}년 이내 출시 게임을 필터링합니다.")
@@ -631,17 +788,30 @@ if st.session_state["step"] == 1:
                 st.warning(f"⚠️ {steam_data}")
                 st.info("Steam 데이터 없이 진행합니다.")
                 st.session_state["steam_data"] = None
-                steam_summary = ""
+                market_patterns = ""
             else:
                 st.session_state["steam_data"] = steam_data
                 st.session_state["steam_data_recent_years"] = recent_years
                 st.session_state["steam_data_time"] = time.time()
-                steam_summary = format_steam_summary(steam_data, recent_years)
+                market_patterns = format_market_patterns(steam_data, recent_years)
 
-        with st.spinner("AI가 게임 아이디어를 생성하고 있습니다..."):
+        # 시장 분석 단계 (AI 호출)
+        with st.spinner("AI가 시장 패턴을 분석하고 있습니다..."):
+            try:
+                market_analysis = generate_market_analysis(keywords, market_patterns)
+                st.session_state["market_analysis"] = market_analysis
+            except Exception as e:
+                st.warning(f"시장 분석 실패: {e}")
+                st.info("시장 분석 없이 아이디어를 생성합니다.")
+                market_analysis = None
+                st.session_state["market_analysis"] = None
+
+        with st.spinner("AI가 혁신적인 게임 아이디어를 생성하고 있습니다..."):
             try:
                 ideas = generate_game_ideas(
-                    keywords, selected_engine, selected_region, steam_summary,
+                    keywords, selected_engine, selected_region,
+                    market_patterns=market_patterns,
+                    market_analysis=market_analysis,
                     genres=selected_genres or None,
                 )
                 st.session_state["game_ideas"] = ideas
@@ -726,6 +896,26 @@ if st.session_state["step"] >= 2:
                 if steam_only:
                     st.write(", ".join(f"`{k}`" for k in sorted(list(steam_only)[:10])))
 
+    # AI 시장 분석 결과
+    if st.session_state.get("market_analysis"):
+        analysis = st.session_state["market_analysis"]
+        with st.expander("🧠 AI 시장 분석 결과", expanded=False):
+            ma_col1, ma_col2 = st.columns(2)
+            with ma_col1:
+                st.markdown("**사용자 잠재 니즈**")
+                for need in analysis.get("player_needs", []):
+                    st.markdown(f"- {need}")
+                st.markdown("**시장 공백**")
+                for gap in analysis.get("market_gaps", []):
+                    st.markdown(f"- {gap}")
+            with ma_col2:
+                st.markdown("**혁신 축**")
+                for axis in analysis.get("innovation_axes", []):
+                    st.markdown(f"- {axis}")
+                st.markdown("**피해야 할 안티패턴**")
+                for anti in analysis.get("anti_patterns", []):
+                    st.markdown(f"- {anti}")
+
 # ── Step 2: 아이디어 선택 ──
 if st.session_state["step"] >= 2 and st.session_state["game_ideas"]:
     st.header("Step 2: 게임 아이디어 선택")
@@ -740,8 +930,12 @@ if st.session_state["step"] >= 2 and st.session_state["game_ideas"]:
                 st.write(f"**핵심 시스템:** {idea['core_system']}")
                 st.write(f"**타겟 유저:** {idea['target_users']}")
                 st.write(f"**차별화:** {idea['differentiation']}")
-                if idea.get("references"):
-                    st.write(f"**레퍼런스:** {idea['references']}")
+                if idea.get("core_mechanic"):
+                    st.write(f"**핵심 메커니즘:** {idea['core_mechanic']}")
+                if idea.get("market_gap"):
+                    st.write(f"**시장 공백:** {idea['market_gap']}")
+                if idea.get("player_fantasy"):
+                    st.write(f"**플레이어 판타지:** {idea['player_fantasy']}")
 
             with col2:
                 if st.session_state["step"] == 2:
@@ -757,6 +951,7 @@ if st.session_state["step"] >= 2 and st.session_state["game_ideas"]:
             st.session_state["game_ideas"] = None
             st.session_state["selected_idea"] = None
             st.session_state["design_doc"] = None
+            st.session_state["market_analysis"] = None
             st.session_state["step"] = 1
             st.rerun()
 
@@ -767,39 +962,17 @@ if st.session_state["step"] >= 3 and st.session_state["selected_idea"]:
     idea = st.session_state["selected_idea"]
     st.info(f"선택된 아이디어: **{idea['title']}** ({idea['genre']})")
 
-    # 경쟁작 자동 매칭
-    _steam = st.session_state.get("steam_data")
-    if _steam and not isinstance(_steam, str):
-        idea_genre_lower = idea["genre"].lower()
-        matched = [
-            g for g in _steam["games"]
-            if any(ig.lower() in idea_genre_lower for ig in g["genre"])
-        ]
-        if matched:
-            with st.expander(f"🏆 유사 장르 Steam 경쟁작 ({len(matched)}개)", expanded=False):
-                comp_df = pd.DataFrame([
-                    {
-                        "게임": g["name"],
-                        "출시": g.get("release_year", "?"),
-                        "최근 2주 평균 플레이": _format_playtime(g.get("average_2weeks", 0)),
-                        "장르": ", ".join(g["genre"]),
-                        "태그": ", ".join(g["tags"][:5]),
-                    }
-                    for g in matched
-                ])
-                st.dataframe(comp_df, use_container_width=True, hide_index=True)
-
     if st.session_state["design_doc"] is None:
-        with st.spinner("AI가 기획 문서를 작성하고 있습니다..."):
+        with st.spinner("AI가 핵심 메커니즘 중심의 기획 문서를 작성하고 있습니다..."):
             try:
                 steam_data = st.session_state.get("steam_data")
-                doc_steam_summary = (
-                    format_steam_summary(steam_data, recent_years)
+                doc_market_patterns = (
+                    format_market_patterns(steam_data, recent_years)
                     if steam_data and not isinstance(steam_data, str)
                     else ""
                 )
                 doc = generate_design_document(
-                    idea, selected_engine, doc_steam_summary,
+                    idea, selected_engine, doc_market_patterns,
                 )
                 st.session_state["design_doc"] = doc
                 st.rerun()

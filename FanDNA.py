@@ -109,6 +109,20 @@ if "API_KEY" not in st.secrets or not st.secrets["API_KEY"] or st.secrets["API_K
 client = OpenAI(api_key=st.secrets["API_KEY"])
 MODEL = "gpt-4o-mini"
 
+# 주요 팀별 상징색 (이미지 없이 컬러 테마만 사용)
+TEAM_COLORS = {
+    "LG 트윈스": "#C0002F", "SSG 랜더스": "#CE0E2D", "두산 베어스": "#131230",
+    "삼성 라이온즈": "#074CA1", "한화 이글스": "#FF6600", "KIA 타이거즈": "#EA0029",
+    "롯데 자이언츠": "#002955", "NC 다이노스": "#315288", "kt 위즈": "#000000",
+    "키움 히어로즈": "#820024", "울산 HD FC": "#004098", "전북 현대 모터스": "#009933",
+    "FC 서울": "#E50020", "포항 스틸러스": "#000000", "대구 FC": "#75BBE3",
+    "광주 FC": "#FFD700", "부산 KCC 이지스": "#002D56", "서울 SK 나이츠": "#E30020",
+}
+
+# ──────────────────────────────────────────────
+# 2. 비즈니스 로직 (AI 기반 질문 및 추천 생성)
+# ──────────────────────────────────────────────
+
 # ──────────────────────────────────────────────
 # 2. 비즈니스 로직 (AI 기반 질문 및 추천 생성)
 # ──────────────────────────────────────────────
@@ -288,7 +302,7 @@ elif st.session_state.step == "survey":
 elif st.session_state.step == "analyzing":
     st.markdown("<div style='height: 200px;'></div>", unsafe_allow_html=True)
     st.markdown("<h2 style='text-align: center;'>🧠 당신의 DNA를 해독 중...</h2>", unsafe_allow_html=True)
-    with st.spinner("10개의 답변을 바탕으로 당신의 팀을 정밀 분석하고 있습니다."):
+    with st.spinner("10개의 답변을 바탕으로 최적의 팀을 분석하고 있습니다."):
         result = get_recommendation(st.session_state.answers)
         if result:
             st.session_state.result = result
@@ -312,18 +326,30 @@ elif st.session_state.step == "result":
     st.subheader("🏟️ 리그별 추천 팀")
     
     for rec in result['recommendations']:
+        team_color = TEAM_COLORS.get(rec['team'], "#1e3c72")
+        
         st.markdown(f"""
-            <div class="match-card">
-                <div class="league-badge">{rec['league']}</div>
-                <div style='display: flex; justify-content: space-between; align-items: center;'>
-                    <div>
-                        <h2 style='margin: 0; color: #1e3c72;'>{rec['team']}</h2>
-                        <p style='margin-top: 10px; color: #444; line-height: 1.6;'>{rec['reason']}</p>
-                    </div>
-                    <div style='text-align: right; min-width: 120px;'>
-                        <div style='font-size: 0.8em; color: #888;'>MATCH RATE</div>
-                        <div class="match-rate">{rec['match_rate']}%</div>
-                    </div>
+            <div style='
+                background: linear-gradient(135deg, {team_color} 0%, {team_color}ee 100%);
+                padding: 30px; 
+                border-radius: 25px; 
+                box-shadow: 0 15px 35px rgba(0,0,0,0.2); 
+                margin-bottom: 25px; 
+                color: white;
+                display: flex;
+                align-items: center;
+                gap: 20px;
+            '>
+                <div style='flex: 4;'>
+                    <span style='background: rgba(255,255,255,0.25); padding: 4px 12px; border-radius: 50px; font-size: 0.8em; font-weight: bold;'>
+                        {rec['league']}
+                    </span>
+                    <h2 style='margin: 10px 0 5px 0; color: white; border: none;'>{rec['team']}</h2>
+                    <p style='margin: 0; color: rgba(255,255,255,0.9); line-height: 1.6; font-size: 0.95em;'>{rec['reason']}</p>
+                </div>
+                <div style='text-align: right; flex: 1.2; border-left: 1px solid rgba(255,255,255,0.2); padding-left: 20px;'>
+                    <div style='font-size: 0.8em; opacity: 0.8;'>MATCH RATE</div>
+                    <div style='font-size: 2.5em; font-weight: bold;'>{rec['match_rate']}%</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)

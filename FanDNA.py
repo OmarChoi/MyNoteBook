@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 from openai import OpenAI
+import random
 
 # ──────────────────────────────────────────────
 # 1. 설정 및 디자인 (Custom CSS)
@@ -100,61 +101,13 @@ def inject_custom_css():
 
 inject_custom_css()
 
-# OpenAI 클라이언트 설정 (game_planner.py 스타일 유지)
+# OpenAI 클라이언트 설정
 if "API_KEY" not in st.secrets or not st.secrets["API_KEY"] or st.secrets["API_KEY"] == "your-openai-api-key":
     st.error("🔑 API_KEY가 설정되지 않았습니다. `.streamlit/secrets.toml`에 OpenAI API 키를 입력해주세요.")
     st.stop()
 
 client = OpenAI(api_key=st.secrets["API_KEY"])
 MODEL = "gpt-4o-mini"
-
-# ──────────────────────────────────────────────
-# 2. 비즈니스 로직 (AI 기반 질문 및 추천 생성)
-# ──────────────────────────────────────────────
-
-DIMENSIONS = ["성취 지향성", "경기 스타일", "팬 경험", "회복 탄력성", "가치관"]
-
-def generate_survey_questions():
-    """OpenAI를 통해 매번 새로운 심리 테스트 질문 5개를 생성"""
-    system_prompt = f"""
-    당신은 대한민국 스포츠 팬들의 심리를 꿰뚫어 보는 재치 있는 분석가입니다. 
-    사용자의 팬 성향을 분석하기 위한 '심리 테스트 질문' 5개를 생성하세요.
-    
-    [질문 생성 가이드라인]
-    1. 다음 5가지 차원을 각각 하나씩 다루세요: {', '.join(DIMENSIONS)}.
-    2. 질문은 '번역투'를 완전히 배제하고, 한국 스포츠 팬들이 커뮤니티(엠팍, 에펨코리아, 더쿠 등)나 경기장에서 실제로 쓸 법한 자연스러운 구어체를 사용하세요.
-    3. 상황극 형태를 취하되, 문장이 딱딱하지 않고 몰입감 있게 작성하세요. (예: "당신은 ~합니다" 대신 "친구가 ~하자고 한다면?" 또는 "경기장에 갔는데 ~한 상황이라면?")
-    4. 선택지(A, B, C)는 팬들의 '진심'이 느껴지는 말투여야 합니다. (예: "나는 승리를 원한다" -> "무조건 승리! 우승 아니면 의미 없죠")
-    5. 한국 프로스포츠(KBO, K리그, KBL) 특유의 문화(직관, 먹거리, 응원가, 연고지 애착 등)를 적극 반영하세요.
-    
-    반드시 아래 JSON 배열 형식으로만 응답하십시오:
-    [
-      {{
-        "id": "q1",
-        "dimension": "차원명",
-        "question": "자연스러운 한국어 질문 내용",
-        "options": [
-          {{"label": "실제 팬 같은 답변1", "value": "성향키워드1"}},
-          {{"label": "실제 팬 같은 답변2", "value": "성향키워드2"}},
-          {{"label": "실제 팬 같은 답변3", "value": "성향키워드3"}}
-        ]
-      }},
-      ... (5개 반복)
-    ]
-    """
-    
-    try:
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "system", "content": system_prompt}],
-            response_format={"type": "json_object"}
-        )
-        # JSON 객체 내에 배열이 있을 수 있으므로 처리
-        data = json.loads(response.choices[0].message.content)
-        return data if isinstance(data, list) else data.get("questions", data.get("survey", []))
-    except Exception as e:
-        st.error(f"질문 생성 중 오류가 발생했습니다: {e}")
-        return []
 
 # ──────────────────────────────────────────────
 # 2. 비즈니스 로직 (AI 기반 질문 및 추천 생성)
@@ -199,10 +152,18 @@ def generate_survey_questions():
             response_format={"type": "json_object"}
         )
         data = json.loads(response.choices[0].message.content)
-        return data if isinstance(data, list) else data.get("questions", data.get("survey", []))
+        # 다양한 JSON 응답 구조 대응
+        if isinstance(data, list):
+            return data
+        for key in ["questions", "survey", "items"]:
+            if key in data and isinstance(data[key], list):
+                return data[key]
+        return []
     except Exception as e:
         st.error(f"질문 생성 중 오류가 발생했습니다: {e}")
         return []
+
+def get_recommendation(user_answers):
     """OpenAI API를 통해 팀 추천 결과 생성"""
     
     system_prompt = """
@@ -223,9 +184,20 @@ def generate_survey_questions():
           "league": "KBO",
           "team": "팀명",
           "reason": "구체적인 매칭 사유",
-          "match_rate": 0~100 사이 정수
+          "match_rate": 95
         },
-        ... (K리그, KBL 반복)
+        {
+          "league": "K League",
+          "team": "팀명",
+          "reason": "구체적인 매칭 사유",
+          "match_rate": 88
+        },
+        {
+          "league": "KBL",
+          "team": "팀명",
+          "reason": "구체적인 매칭 사유",
+          "match_rate": 92
+        }
       ]
     }
     """
@@ -247,7 +219,7 @@ def generate_survey_questions():
         return None
 
 # ──────────────────────────────────────────────
-# 4. UI 구성
+# 3. UI 구성
 # ──────────────────────────────────────────────
 
 # 세션 상태 초기화
@@ -279,7 +251,7 @@ if st.session_state.step == "start":
         if st.button("내 팬 DNA 분석 시작하기", type="primary"):
             with st.spinner("당신을 위한 맞춤형 질문을 생성하고 있습니다..."):
                 questions = generate_survey_questions()
-                if questions:
+                if questions and len(questions) >= 5:
                     st.session_state.selected_questions = questions
                     st.session_state.step = "survey"
                     st.rerun()
@@ -299,7 +271,7 @@ elif st.session_state.step == "survey":
                     label=q.get('category', f"cat_{i}"),
                     options=[opt['label'] for opt in q['options']],
                     index=0,
-                    key=q['id'],
+                    key=f"q_radio_{i}",
                     label_visibility="collapsed"
                 )
                 val = next(opt['value'] for opt in q['options'] if opt['label'] == choice)
@@ -328,14 +300,6 @@ elif st.session_state.step == "result":
     st.balloons()
     
     st.markdown(f"""
-        <div style='text-align: center; margin-bottom: 50px;'>
-            <p style='font-size: 1.5em; color: #666; margin-bottom: 0;'>분석 완료! 당신은</p>
-            <h1 style='font-size: 3.5em; margin-top: 0;'>'{result['personality_type']}'</h1>
-            <div style='background: #eef2f7; padding: 20px; border-radius: 15px; margin-top: 20px;'>
-                {result['summary']}
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
         <div style='text-align: center; margin-bottom: 50px;'>
             <p style='font-size: 1.5em; color: #666; margin-bottom: 0;'>분석 완료! 당신은</p>
             <h1 style='font-size: 3.5em; margin-top: 0;'>'{result['personality_type']}'</h1>

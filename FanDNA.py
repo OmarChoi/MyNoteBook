@@ -156,6 +156,32 @@ def generate_survey_questions():
         st.error(f"질문 생성 중 오류가 발생했습니다: {e}")
         return []
 
+def generate_fan_image(team_name, league):
+    """DALL-E 3를 통해 추천 팀 유니폼을 입은 팬 이미지 생성"""
+    league_map = {"KBO": "Baseball", "K League": "Soccer", "KBL": "Basketball"}
+    sport = league_map.get(league, "Sports")
+    
+    prompt = f"""
+    A cinematic, high-quality sports photography of a passionate South Korean fan cheering in a stadium.
+    The fan is wearing a professional {sport} uniform with the primary colors of the '{team_name}' team.
+    The scene is a crowded stadium at night with dramatic lighting and stadium flares.
+    The fan looks extremely happy and excited, celebrating a victory.
+    Photorealistic, 8k resolution, dynamic composition, shallow depth of field.
+    """
+    
+    try:
+        response = client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1024x1024",
+            quality="standard",
+            n=1,
+        )
+        return response.data[0].url
+    except Exception as e:
+        print(f"이미지 생성 실패: {e}")
+        return None
+
 def get_recommendation(user_answers):
     """OpenAI API를 통해 팀 추천 결과 생성"""
     
@@ -269,17 +295,24 @@ elif st.session_state.step == "survey":
 
 elif st.session_state.step == "analyzing":
     st.markdown("<div style='height: 200px;'></div>", unsafe_allow_html=True)
-    st.markdown("<h2 style='text-align: center;'>🧠 당신의 DNA를 해독하는 중...</h2>", unsafe_allow_html=True)
-    with st.spinner("사용자의 성향과 30여 개 프로팀의 데이터를 정밀 대조하고 있습니다."):
+    st.markdown("<h2 style='text-align: center;'>🧠 당신의 DNA를 해독하고 이미지를 생성 중...</h2>", unsafe_allow_html=True)
+    with st.spinner("사용자의 성향 분석 및 맞춤형 팬 이미지 생성 중..."):
         result = get_recommendation(st.session_state.answers)
         if result:
             st.session_state.result = result
+            # 가장 높은 매칭률을 가진 첫 번째 팀으로 이미지 생성
+            top_team = result['recommendations'][0]
+            st.session_state.fan_image_url = generate_fan_image(top_team['team'], top_team['league'])
             st.session_state.step = "result"
             st.rerun()
 
 elif st.session_state.step == "result":
     result = st.session_state.result
     st.balloons()
+    
+    # 상단 이미지 표시
+    if st.session_state.get("fan_image_url"):
+        st.image(st.session_state.fan_image_url, use_container_width=True, caption=f"당신의 미래 모습: {result['recommendations'][0]['team']}의 열혈 팬")
     
     st.markdown(f"""
         <div style='text-align: center; margin-bottom: 50px;'>

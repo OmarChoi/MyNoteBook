@@ -1,6 +1,7 @@
 import json
 import time
 from collections import Counter
+from datetime import datetime
 
 import markdown
 import pandas as pd
@@ -63,13 +64,17 @@ REGIONS = {
 ENGINES = ["Unity", "Unreal Engine", "Godot", "RPG Maker", "기타"]
 
 STEAMSPY_BASE_URL = "https://steamspy.com/api.php"
+STEAM_STORE_API_URL = "https://store.steampowered.com/api/appdetails"
 STEAMSPY_TOP_DETAIL_COUNT = 15
 
 SESSION_KEYS = [
     "step", "trend_data", "trend_keywords",
     "game_ideas", "selected_idea", "design_doc",
-    "steam_data",
 ]
+
+# steam_data는 별도 캐싱 (초기화 시에도 유지)
+STEAM_CACHE_KEYS = ["steam_data", "steam_data_recent_years", "steam_data_time"]
+STEAM_CACHE_TTL = 3600  # 1시간
 
 SEED_KEYWORDS = {
     "KR": [
@@ -149,10 +154,65 @@ def extract_trend_keywords(trend_data) -> list[str]:
 # Steam 인기 게임 데이터 수집
 # ──────────────────────────────────────────────
 
-@st.cache_data(ttl=3600)
-def fetch_steam_top100():
-    """SteamSpy Top100(최근 2주) 데이터를 수집하고 상위 게임의 장르/태그를 집계합니다."""
+def _parse_owners(owners_str: str) -> int:
+    """SteamSpy owners 범위 문자열(예: '10,000,000 .. 20,000,000')을 중간값으로 변환합니다."""
     try:
+        parts = owners_str.replace(",", "").split("..")
+        low = int(parts[0].strip())
+        high = int(parts[1].strip()) if len(parts) > 1 else low
+        return (low + high) // 2
+    except (ValueError, IndexError):
+        return 0
+
+
+def _format_owners(count: int) -> str:
+    """소유자 수를 읽기 쉬운 형식으로 변환합니다 (예: 1,500,000 → '1,500만')."""
+    if count >= 10_000:
+        return f"{count // 10_000:,}만"
+    return f"{count:,}"
+
+
+def _format_playtime(minutes: int) -> str:
+    """플레이 시간(분)을 읽기 쉬운 형식으로 변환합니다."""
+    if minutes >= 60:
+        h, m = divmod(minutes, 60)
+        return f"{h}시간 {m}분" if m else f"{h}시간"
+    return f"{minutes}분"
+
+
+def _get_release_year(appid: str) -> int | None:
+    """Steam Store API에서 게임의 출시 연도를 가져옵니다."""
+    try:
+        resp = requests.get(
+            STEAM_STORE_API_URL,
+            params={"appids": appid, "filters": "release_date"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        app_data = data.get(str(appid), {})
+        if not app_data.get("success"):
+            return None
+        release_info = app_data.get("data", {}).get("release_date", {})
+        if release_info.get("coming_soon"):
+            return None
+        date_str = release_info.get("date", "")
+        for part in date_str.replace(",", " ").split():
+            if len(part) == 4 and part.isdigit():
+                return int(part)
+        return None
+    except Exception:
+        return None
+
+
+def fetch_steam_top100(recent_years: int, progress_bar=None, status_text=None):
+    """SteamSpy Top100(최근 2주)에서 최근 출시 게임만 필터링하여 장르/태그를 집계합니다."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    try:
+        # ── Phase 1: SteamSpy Top100 리스트 가져오기 ──
+        if status_text is not None:
+            status_text.caption("Top 100 리스트를 가져오는 중...")
         resp = requests.get(
             STEAMSPY_BASE_URL,
             params={"request": "top100in2weeks"},
@@ -161,19 +221,57 @@ def fetch_steam_top100():
         resp.raise_for_status()
         top100 = resp.json()
 
-        # 플레이어 수 기준 정렬 → 상위 N개
-        sorted_games = sorted(
-            top100.items(),
-            key=lambda x: x[1].get("ccu", 0),
-            reverse=True,
-        )[:STEAMSPY_TOP_DETAIL_COUNT]
+        # ── Phase 2: 출시일 병렬 확인 ──
+        cutoff_year = datetime.now().year - recent_years
+        checked = 0
+        total = len(top100)
 
+        def _check_release(item):
+            appid, basic_info = item
+            release_year = _get_release_year(appid)
+            return appid, basic_info, release_year
+
+        recent_games = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {
+                executor.submit(_check_release, item): item
+                for item in top100.items()
+            }
+            for future in as_completed(futures):
+                checked += 1
+                if progress_bar is not None:
+                    progress_bar.progress(
+                        checked / total * 0.5,  # 전체의 50%를 Phase 2에 할당
+                        text=f"출시일 확인 중... {checked}/{total}",
+                    )
+                appid, basic_info, release_year = future.result()
+                if release_year is not None and release_year >= cutoff_year:
+                    recent_games.append((appid, basic_info, release_year))
+
+        # 최근 2주 평균 플레이 시간 기준 정렬
+        recent_games.sort(
+            key=lambda x: x[1].get("average_2weeks", 0),
+            reverse=True,
+        )
+
+        # ── Phase 3: 필터된 게임 상세 정보 수집 (SteamSpy, 순차) ──
         games = []
         genre_counter = Counter()
         tag_counter = Counter()
+        checked_detail = 0
 
-        for appid, basic_info in sorted_games:
-            time.sleep(1)  # rate limit: 1 req/sec
+        for appid, basic_info, release_year in recent_games:
+            if len(games) >= STEAMSPY_TOP_DETAIL_COUNT:
+                break
+
+            checked_detail += 1
+            if progress_bar is not None:
+                progress_bar.progress(
+                    0.5 + (len(games) / STEAMSPY_TOP_DETAIL_COUNT) * 0.5,
+                    text=f"상세 정보 수집 중... {len(games)}/{STEAMSPY_TOP_DETAIL_COUNT} (확인 {checked_detail}개)",
+                )
+
+            time.sleep(1)  # SteamSpy rate limit
             try:
                 detail_resp = requests.get(
                     STEAMSPY_BASE_URL,
@@ -182,6 +280,10 @@ def fetch_steam_top100():
                 )
                 detail_resp.raise_for_status()
                 detail = detail_resp.json()
+
+                avg_2weeks = detail.get("average_2weeks", 0)
+                if avg_2weeks == 0:
+                    continue
 
                 genre_list = [
                     g.strip()
@@ -196,19 +298,24 @@ def fetch_steam_top100():
                 for t in tag_names:
                     tag_counter[t] += 1
 
-                games.append({
-                    "name": detail.get("name", basic_info.get("name", "Unknown")),
-                    "ccu": basic_info.get("ccu", 0),
-                    "genre": genre_list,
-                    "tags": tag_names,
-                })
+                owners = _parse_owners(
+                    detail.get("owners", basic_info.get("owners", "0"))
+                )
+                name = detail.get("name", basic_info.get("name", "Unknown"))
             except Exception:
-                games.append({
-                    "name": basic_info.get("name", "Unknown"),
-                    "ccu": basic_info.get("ccu", 0),
-                    "genre": [],
-                    "tags": [],
-                })
+                continue
+
+            games.append({
+                "name": name,
+                "owners": owners,
+                "average_2weeks": avg_2weeks,
+                "release_year": release_year,
+                "genre": genre_list,
+                "tags": tag_names,
+            })
+
+            if status_text is not None:
+                status_text.caption(f"수집 완료: {name} ({release_year}년, 평균 {_format_playtime(avg_2weeks)})")
 
         return {
             "games": games,
@@ -219,16 +326,18 @@ def fetch_steam_top100():
         return f"Steam 데이터 수집 실패: {e}"
 
 
-def format_steam_summary(steam_data) -> str:
+def format_steam_summary(steam_data, recent_years: int) -> str:
     """Steam 데이터를 AI 프롬프트용 텍스트로 포맷합니다."""
     if isinstance(steam_data, str) or steam_data is None:
         return ""
 
     lines = []
-    lines.append("현재 Steam 인기 게임 (최근 2주 플레이어 수 기준):")
+    lines.append(f"Steam 인기 게임 (최근 2주 인기 + 최근 {recent_years}년 이내 출시):")
     for g in steam_data["games"][:10]:
         genres = ", ".join(g["genre"]) if g["genre"] else "N/A"
-        lines.append(f"- {g['name']} (장르: {genres}, 동접: {g['ccu']:,})")
+        year = g.get("release_year", "?")
+        playtime = _format_playtime(g.get("average_2weeks", 0))
+        lines.append(f"- {g['name']} ({year}년, 장르: {genres}, 최근 2주 평균 플레이: {playtime})")
 
     lines.append("\nSteam 인기 장르 TOP 10:")
     for genre, count in steam_data["top_genres"]:
@@ -456,6 +565,14 @@ with st.sidebar:
         help="선택하면 해당 장르 중심으로 아이디어를 생성합니다.",
     )
 
+    recent_years = st.slider(
+        "출시 연도 필터 (최근 N년 이내)",
+        min_value=1,
+        max_value=20,
+        value=5,
+        help="최근 N년 이내에 출시된 게임 중에서만 분석합니다."
+    )
+
     st.divider()
     if st.button("🔄 초기화", use_container_width=True):
         for key in SESSION_KEYS:
@@ -487,8 +604,29 @@ if st.session_state["step"] == 1:
 
             st.session_state["trend_keywords"] = keywords
 
-        with st.spinner("Steam 인기 게임 데이터를 수집하고 있습니다..."):
-            steam_data = fetch_steam_top100()
+        # Steam 데이터 캐시 확인: 같은 연도 필터 + TTL 이내면 재사용
+        cached = st.session_state.get("steam_data")
+        cached_years = st.session_state.get("steam_data_recent_years")
+        cached_time = st.session_state.get("steam_data_time", 0)
+        cache_valid = (
+            cached is not None
+            and not isinstance(cached, str)
+            and cached_years == recent_years
+            and (time.time() - cached_time) < STEAM_CACHE_TTL
+        )
+
+        if cache_valid:
+            st.success(f"Steam 데이터 캐시 사용 (최근 {recent_years}년 필터, {len(cached['games'])}개 게임)")
+            steam_data = cached
+            steam_summary = format_steam_summary(steam_data, recent_years)
+        else:
+            st.subheader("Steam 데이터 수집 중...")
+            st.caption(f"최근 {recent_years}년 이내 출시 게임을 필터링합니다.")
+            progress_bar = st.progress(0.0, text="준비 중...")
+            status_text = st.empty()
+            steam_data = fetch_steam_top100(recent_years=recent_years, progress_bar=progress_bar, status_text=status_text)
+            progress_bar.empty()
+            status_text.empty()
             if isinstance(steam_data, str):
                 st.warning(f"⚠️ {steam_data}")
                 st.info("Steam 데이터 없이 진행합니다.")
@@ -496,7 +634,9 @@ if st.session_state["step"] == 1:
                 steam_summary = ""
             else:
                 st.session_state["steam_data"] = steam_data
-                steam_summary = format_steam_summary(steam_data)
+                st.session_state["steam_data_recent_years"] = recent_years
+                st.session_state["steam_data_time"] = time.time()
+                steam_summary = format_steam_summary(steam_data, recent_years)
 
         with st.spinner("AI가 게임 아이디어를 생성하고 있습니다..."):
             try:
@@ -528,9 +668,14 @@ if st.session_state["step"] >= 2:
     ):
         steam = st.session_state["steam_data"]
         with st.expander("🎮 Steam 인기 게임 분석", expanded=False):
-            st.subheader("인기 게임 TOP 15")
+            st.subheader(f"인기 게임 TOP 15 (최근 {recent_years}년 이내 출시)")
             game_df = pd.DataFrame([
-                {"게임": g["name"], "동접": g["ccu"], "장르": ", ".join(g["genre"])}
+                {
+                    "게임": g["name"],
+                    "출시": g.get("release_year", "?"),
+                    "최근 2주 평균 플레이": _format_playtime(g.get("average_2weeks", 0)),
+                    "장르": ", ".join(g["genre"]),
+                }
                 for g in steam["games"]
             ])
             st.dataframe(game_df, use_container_width=True, hide_index=True)
@@ -635,7 +780,8 @@ if st.session_state["step"] >= 3 and st.session_state["selected_idea"]:
                 comp_df = pd.DataFrame([
                     {
                         "게임": g["name"],
-                        "동접": g["ccu"],
+                        "출시": g.get("release_year", "?"),
+                        "최근 2주 평균 플레이": _format_playtime(g.get("average_2weeks", 0)),
                         "장르": ", ".join(g["genre"]),
                         "태그": ", ".join(g["tags"][:5]),
                     }
@@ -648,7 +794,7 @@ if st.session_state["step"] >= 3 and st.session_state["selected_idea"]:
             try:
                 steam_data = st.session_state.get("steam_data")
                 doc_steam_summary = (
-                    format_steam_summary(steam_data)
+                    format_steam_summary(steam_data, recent_years)
                     if steam_data and not isinstance(steam_data, str)
                     else ""
                 )
